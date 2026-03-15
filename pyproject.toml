@@ -1,0 +1,50 @@
+[project]
+name = "diff-rendering"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = "==3.12.*"
+dependencies = [
+    "ipykernel>=7.2.0",
+    "matplotlib>=3.10.8",
+    "numpy>=2.2.6",
+    "plotly>=6.5.2",
+    "pytorch3d",
+    "setuptools>=82.0.0",
+    "torch",
+    "torchvision",
+    "tqdm>=4.67.3",
+    "wheel>=0.46.3",
+]
+
+[project.scripts]
+diff-rendering = "diff_rendering:main"
+
+[build-system]
+requires = ["uv_build>=0.9.22,<0.10.0"]
+build-backend = "uv_build"
+
+[tool.uv]
+# Require that the package is available for linux ARM.
+required-environments = [
+        "sys_platform == 'linux' and platform_machine == 'aarch64'",
+]
+
+[[tool.uv.index]]
+name = "pytorch-cu130"
+url = "https://download.pytorch.org/whl/cu130"
+explicit = true
+
+[tool.uv.sources]
+torch = { index = "pytorch-cu130" }
+torchvision = { index = "pytorch-cu130" }
+pytorch3d = { git = "https://github.com/facebookresearch/pytorch3d.git", rev = "main" }
+
+[tool.jupytext]
+formats = "ipynb,py:percent"
+
+[dependency-groups]
+dev = [
+    "setuptools>=82.0.0",
+    "wheel>=0.46.3",
+]
