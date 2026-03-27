@@ -123,6 +123,7 @@ import utils
 from dataclasses import dataclass, field
 from typing import Callable
 from typing import Literal
+from typing import Any
 
 @dataclass
 class LossConfig:
@@ -140,6 +141,8 @@ class LossConfig:
         The annealing strategy to use. Default is "linear".
     loss_fn : Callable[[p3ds.Meshes], torch.Tensor] | None, optional
         The function used to compute the loss. Default is None.
+    kwargs : dict[str, Any]
+        Additional keyword arguments to pass to the loss function.
     values : list[float]
         A history of the computed loss values.
     weight_history : list[float]
@@ -149,6 +152,7 @@ class LossConfig:
     end_weight: float | None = None
     strategy: Literal["linear", "cosine", "exponential"] = "linear"
     loss_fn: Callable[[p3ds.Meshes], torch.Tensor] | None = None
+    kwargs: dict[str, Any] = field(default_factory=dict) # pyright: ignore[reportAny] - kwargs type depends entirely on the downstream loss function
     values: list[float] = field(default_factory=list)
     weight_history: list[float] = field(default_factory=list)
 
@@ -590,17 +594,16 @@ def optimize_mesh(
             # Deform
             deform_mesh = src_mesh.offset_verts(deform_verts)
 
-            loss_silhouette = calculate_silhouette_loss(
-                target,
-                deform_mesh.extend(data.shape[0]),
-                data,
-                dataset.camera_angle_x,
-            )
-
-            loss_silhouette /= batch_size
-
             for key, config in losses.items():
                 if key == "silhouette":
+                    loss_silhouette = calculate_silhouette_loss(
+                        target,
+                        deform_mesh.extend(data.shape[0]),
+                        data,
+                        dataset.camera_angle_x,
+                        **config.kwargs,
+                    )
+                    loss_silhouette /= batch_size
                     config.values.append(loss_silhouette.item())
                     batch_loss += loss_silhouette * config.weight
                 elif config.loss_fn is not None:
@@ -654,7 +657,10 @@ def optimize_mesh(
 # %% Setup Hypers
 # Build weighted losses with annealing
 loss_configs: dict[str, LossConfig] = {
-    "silhouette": LossConfig(weight=1.0),
+    "silhouette": LossConfig(
+        weight=1.0,
+        kwargs={"method": "iou"},
+    ),
     "edge": LossConfig(
         weight=0.1,
         end_weight=1.0,
