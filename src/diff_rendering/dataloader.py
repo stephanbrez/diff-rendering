@@ -30,6 +30,7 @@ class NeRFSyntheticDataset(Dataset):
 
         # The camera horizontal field of view is stored in the json
         self.camera_angle_x = self.meta.get('camera_angle_x', None)
+        self.focal_length = 1.0 / torch.tan(torch.tensor(self.camera_angle_x / 2.0)) # NDC width/2 = 1.0
 
         # List of all frames containing image paths and poses
         self.frames = self.meta['frames']
@@ -37,11 +38,39 @@ class NeRFSyntheticDataset(Dataset):
         # PyTorch standard transformation
         self.transform = ToTensor()
 
+        # Convert from NeRF camera poses to PyTorch3D format
+        c2w_matrices = torch.tensor([frame['transform_matrix'] for frame in self.frames], dtype=torch.float32)
+        # Convert the C2W matrices into W2C matrices.
+        w2c_matrices = torch.linalg.inv(c2w_matrices)
+
+        # Camera space: flip X and Z - Blender -> Pytorch3d
+        P_cam = torch.tensor([
+            [-1,  0,  0,  0],
+            [ 0,  1,  0,  0],
+            [ 0,  0, -1,  0],
+            [ 0,  0,  0,  1],
+        ], dtype=torch.float32,)
+
+        # World spaces: swap Y and Z
+        P_world = torch.tensor([
+            [1,  0,  0,  0],
+            [0,  0,  1,  0],
+            [0,  1,  0,  0],
+            [0,  0,  0,  1],
+        ], dtype=torch.float32,)
+
+        # Apply both in one step
+        w2c_p3d = P_cam @ w2c_matrices @ P_world
+
+        self.R = w2c_p3d[:, :3, :3]
+        self.R = self.R.transpose(1, 2) # switch to row-major
+        self.T = w2c_p3d[:, :3, 3]
+
     def __len__(self) -> int:
         """Return the number of frames in the dataset."""
         return len(self.frames)
 
-    def __getitem__(self, idx) -> tuple[torch.Tensor, torch.Tensor]:
+    def __getitem__(self, idx) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """
         Load a single frame's camera pose and image.
 
@@ -52,9 +81,10 @@ class NeRFSyntheticDataset(Dataset):
 
         Returns
         -------
-        tuple[torch.Tensor, torch.Tensor]
-            A pair of (transform_matrix, img_tensor) where:
-            - transform_matrix has shape (4, 4), the camera-to-world matrix.
+        tuple[torch.Tensor, torch.Tensor, torch.Tensor]
+            A tuple of (rotation matrix, translation vector, img_tensor) where:
+            - rotation matrix has shape (3, 3).
+            - translation vector has shape (3,).
             - img_tensor has shape (4, H, W), the RGBA image in CHW format
               with pixel values normalized to [0.0, 1.0].
         """
@@ -80,9 +110,47 @@ class NeRFSyntheticDataset(Dataset):
         # ToTensor() converts HWC -> CHW and normalizes pixels to [0.0, 1.0]
         img_tensor = self.transform(img)
 
-        # 3. Get the camera pose
-        # The transform_matrix is a 4x4 camera-to-world matrix
-        transform_matrix = torch.tensor(frame['transform_matrix'], dtype=torch.float32)
+        # Return the converted components
+        return self.R[idx], self.T[idx], img_tensor
 
-        # Return the pair (Transform, Image)
-        return transform_matrix, img_tensor
+
+class COLMAPDataset(Dataset):
+    def __init__(self):
+        w2c_matrices = transform_matrices # no conversion
+
+        # Camera space: flix X and Y - COLMAP -> Pytorch3d
+        P_cam = torch.tensor([
+            [-1, 0,  0,  0],
+            [0, -1,  0,  0],
+            [0,  0,  1,  0],
+            [0,  0,  0,  1],
+        ], dtype=torch.float32,)
+
+        # World spaces: no flip needed
+
+        # Apply
+        w2c_p3d = P_cam @ w2c_matrices
+
+        self.R = w2c_p3d[:, :3, :3]
+        self.R = self.R.transpose(1, 2) # switch to row-major
+        self.T = w2c_p3d[:, :3, 3]
+
+    def __len__(self):
+        return len(self.frames)
+
+    def __get_item__(self):
+        # If the path starts with './', strip it so os.path.join works properly if img_dir was overridden
+        if rel_path.startswith('./'):
+            rel_path = rel_path[2:]
+
+        full_img_path = os.path.join(self.base_dir, rel_path)
+
+        # 2. Load the image
+        # Images are RGBA (4 channels), usually with a transparent background
+        img = Image.open(full_img_path).convert("RGBA")
+
+        # ToTensor() converts HWC -> CHW and normalizes pixels to [0.0, 1.0]
+        img_tensor = self.transform(img)
+
+        # Return the converted components
+        return self.R[idx], self.T[idx], img_tensor

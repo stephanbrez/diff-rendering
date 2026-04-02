@@ -119,6 +119,7 @@ import tqdm
 import math
 import dataloader
 import utils
+import recon_bench
 
 from dataclasses import dataclass, field
 from typing import Callable
@@ -199,73 +200,6 @@ DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 DATA_DIR = pathlib.Path("./data")
 
 # %% Define camera & mesh utils
-def create_pytorch3d_cameras(
-    transform_matrices: torch.Tensor,
-    camera_angle_x: float,
-    image_size: tuple[int, int],
-) -> p3dr.PerspectiveCameras:
-    """
-    Convert NeRF/Blender camera poses into PyTorch3D PerspectiveCameras.
-
-    Applies coordinate system conversions (Blender -> PyTorch3D) including
-    axis flips and row-major transposition.
-
-    Parameters
-    ----------
-    transform_matrices : torch.Tensor
-        Camera-to-world matrices of shape (N, 4, 4).
-    camera_angle_x : float
-        Horizontal field of view in radians.
-    image_size : tuple[int, int]
-        Image dimensions as (height, width) in pixels.
-
-    Returns
-    -------
-    p3dr.PerspectiveCameras
-        PyTorch3D cameras with N views.
-    """
-    N = transform_matrices.shape[0]
-
-    # Convert the C2W matrices into W2C matrices.
-    w2c_blender = torch.linalg.inv(transform_matrices)
-
-    # Camera space: flip X and Z - Blender -> Pytorch3d
-    P_cam = torch.tensor([
-        [-1,  0,  0,  0],
-        [ 0,  1,  0,  0],
-        [ 0,  0, -1,  0],
-        [ 0,  0,  0,  1],
-    ], dtype=torch.float32, device=transform_matrices.device)
-
-    # World spaces: swap Y and Z
-    P_world = torch.tensor([
-        [1,  0,  0,  0],
-        [0,  0,  1,  0],
-        [0,  1,  0,  0],
-        [0,  0,  0,  1],
-    ], dtype=torch.float32, device=transform_matrices.device)
-
-    # Apply both in one step
-    w2c_p3d = P_cam @ w2c_blender @ P_world
-
-    rot_matrix = w2c_p3d[:, :3, :3]
-    rot_matrix = rot_matrix.transpose(1, 2) # switch to row-major
-    trans_matrix = w2c_p3d[:, :3, 3]
-
-    # print(f"R: {torch.round(rot_matrix[0], decimals=4)}, T: {torch.round(trans_matrix[0], decimals=4)}")
-
-    focal_length = 1.0 / math.tan(camera_angle_x / 2) # NDC width/2 = 1.0
-
-    cameras = p3dr.PerspectiveCameras(
-        focal_length = focal_length,
-        R = rot_matrix,
-        T = trans_matrix,
-        image_size=[image_size] * N,
-        device=transform_matrices.device,
-    )
-
-    return cameras
-
 def load_mesh(
         file_path: pathlib.Path,
         file_type: Literal["mesh", "pointcloud"],
@@ -445,12 +379,13 @@ def soft_iou_loss(
 def calculate_silhouette_loss(
     targets: torch.Tensor,
     pred_mesh: p3ds.Meshes,
-    camera_data: torch.Tensor,
-    camera_fov: float = 90.0,
+    batch_R: torch.Tensor,
+    batch_T: torch.Tensor,
+    cam_focal_length: torch.Tensor,
     method: Literal["iou", "mse"] = "iou",
 ) -> torch.Tensor:
     """
-    Compute mean squared error between predicted and target silhouettes.
+    Compute the loss between predicted and target silhouettes.
 
     Renders the mesh from each camera viewpoint and compares the alpha
     channel against the target images.
@@ -461,10 +396,14 @@ def calculate_silhouette_loss(
         Ground-truth images of shape (N, C, H, W) in CHW format.
     pred_mesh : p3ds.Meshes
         Predicted meshes to render (batched).
-    camera_data : torch.Tensor
-        Camera-to-world matrices of shape (N, 4, 4).
-    camera_fov : float
-        Horizontal field of view in radians. Default is 90.0.
+    batch_R : torch.Tensor
+        Camera rotation matrices of shape (N, 3, 3).
+    batch_T : torch.Tensor
+        Camera translation vectors of shape (N, 3).
+    cam_focal_length : torch.Tensor
+        Camera focal lengths.
+    method : Literal["iou", "mse"], optional
+        The loss computation method. Default is "iou".
 
     Returns
     -------
@@ -473,11 +412,15 @@ def calculate_silhouette_loss(
     """
     target_shape = targets[0].shape
     lights = p3dr.PointLights(device=DEVICE, location=[[0.0, 0.0, -3.0]])
-    cameras = create_pytorch3d_cameras(
-        camera_data,
-        camera_fov,
-        (target_shape[-2], target_shape[-1]),
+
+    cameras = p3dr.PerspectiveCameras(
+        focal_length = cam_focal_length,
+        R = batch_R,
+        T = batch_T,
+        image_size=[(target_shape[-2], target_shape[-1])] * targets.size(0),
+        device=DEVICE,
     )
+
     renderer = create_silhouette_renderer(
         cameras,
         (target_shape[-2], target_shape[-1]),
@@ -505,7 +448,8 @@ def optimize_mesh(
     optimizer_fn: OptimizerFactory = lambda params: torch.optim.SGD(params, lr=1.0, momentum=0.9),
     scheduler_fn: SchedulerFactory | None = None,
     plot_every: int | None = None,
-) -> tuple[p3ds.Meshes, dict[str, LossConfig]]:
+    profiling: bool = False,
+) -> tuple[p3ds.Meshes, dict[str, LossConfig], list[float]]:
     """
     Optimize a sphere mesh to match training images via silhouette fitting.
 
@@ -533,12 +477,15 @@ def optimize_mesh(
     plot_every : int | None
         Epoch interval for visualizing the mesh against the reference image.
         If None, no visualization is shown during training.
+    profiling : bool
+        Whether to enable performance profiling. Default is False.
 
     Returns
     -------
-    tuple[p3ds.Meshes, dict[str, LossConfig]]
-        The optimized deformed mesh and the losses dict with populated
-        ``values`` and ``weight_history`` for each config.
+    tuple[p3ds.Meshes, dict[str, LossConfig], list[float]]
+        The optimized deformed mesh, the losses dict with populated
+        ``values`` and ``weight_history`` for each config, and the learning
+        rate history.
     """
     dataset = dataloader.NeRFSyntheticDataset(train_path)
     train_loader = torch.utils.data.DataLoader(
@@ -547,14 +494,21 @@ def optimize_mesh(
         shuffle=True,
     )
 
+    # Set up profiling
+    timer = recon_bench.Timer(enabled=profiling)
+    mem = recon_bench.MemoryTracker(enabled=profiling)
+
+
     # Set up static camera
-    first_pose, ref_image = dataset[0]
-    first_pose, ref_image = first_pose.to(DEVICE), ref_image.to(DEVICE)
+    first_R, first_T, ref_image = dataset[0]
+    first_R, first_T, ref_image = first_R.to(DEVICE), first_T.to(DEVICE), ref_image.to(DEVICE)
     ref_h, ref_w = ref_image.shape[-2], ref_image.shape[-1]
-    cameras = create_pytorch3d_cameras(
-        first_pose.unsqueeze(0),
-        dataset.camera_angle_x,
-        (ref_h, ref_w),
+    cameras = p3dr.PerspectiveCameras(
+        R=first_R.unsqueeze(0),
+        T=first_T.unsqueeze(0),
+        focal_length=dataset.focal_length,
+        image_size=[(ref_h, ref_w)],
+        device=DEVICE,
     )
     renderer_silhouette = create_silhouette_renderer(
         cameras,
@@ -575,32 +529,25 @@ def optimize_mesh(
 
     optimizer = optimizer_fn([deform_verts])
     scheduler = scheduler_fn(optimizer) if scheduler_fn is not None else None
+    learning_rate = []
 
-    epoch_loop = tqdm.tqdm(range(epochs), desc="Optimizing")
-    for i in epoch_loop:
-        epoch_loss = torch.tensor(0.0, device=DEVICE)
-
-        train_pbar = tqdm.tqdm(
-            train_loader,
-            desc="Batch Optimization",
-            leave=False,
-        )
-        for batch_idx, batch in enumerate(train_pbar):
+    def _run_batch(batch_idx, batch, train_pbar) -> torch.Tensor:
+        with timer.section("batch"), mem.section("batch"):
             batch_loss = torch.tensor(0.0, device=DEVICE)
-            data, target = batch
-            data, target = data.to(DEVICE), target.to(DEVICE)
+            R_matrices, T_vectors, target = batch
+            R_matrices, T_vectors, target = R_matrices.to(DEVICE), T_vectors.to(DEVICE), target.to(DEVICE)
 
             optimizer.zero_grad()
-            # Deform
             deform_mesh = src_mesh.offset_verts(deform_verts)
 
             for key, config in losses.items():
                 if key == "silhouette":
                     loss_silhouette = calculate_silhouette_loss(
-                        target,
-                        deform_mesh.extend(data.shape[0]),
-                        data,
-                        dataset.camera_angle_x,
+                        targets=target,
+                        pred_mesh=deform_mesh.extend(R_matrices.shape[0]),
+                        batch_R=R_matrices,
+                        batch_T=T_vectors,
+                        cam_focal_length=dataset.focal_length,
                         **config.kwargs,
                     )
                     loss_silhouette /= batch_size
@@ -612,34 +559,53 @@ def optimize_mesh(
                     batch_loss += loss * config.weight
 
             train_pbar.set_description(f"Batch {batch_idx} loss: {batch_loss:.4f}")
-            epoch_loss += batch_loss.detach()
-            batch_loss.backward()
 
-            # Clip grads to avoid large vertex changes
-            torch.nn.utils.clip_grad_norm_([deform_verts], max_norm=1.0)
-            optimizer.step()
+            with timer.section("backward"), mem.section("backward"):
+                batch_loss.backward()
+                # Clip grads to avoid large vertex changes
+                torch.nn.utils.clip_grad_norm_([deform_verts], max_norm=1.0)
+                optimizer.step()
 
-        epoch_loss /= len(train_loader)
-        epoch_loop.set_description(f"Epoch {i}/{epochs} loss: {epoch_loss:.6f} lr: {optimizer.param_groups[0]['lr']:.4e}")
+            return batch_loss.detach()
 
-        # Update the LR scheduler if needed
-        if scheduler is not None:
-            scheduler.step()
+    def _run_epoch(i, epoch_loop):
+        with timer.section("epoch"), mem.section("epoch"):
+            epoch_loss = torch.tensor(0.0, device=DEVICE)
 
-        # Update the LossConfig
-        progress = (i + 1) / epochs
-        for config in losses.values():
-            config.step(progress)
+            train_pbar = tqdm.tqdm(train_loader, desc="Batch Optimization", leave=False)
+            for batch_idx, batch in enumerate(train_pbar):
+                epoch_loss += _run_batch(batch_idx, batch, train_pbar)
 
-        if plot_every is not None and i % plot_every == 0:
-            utils.visualize_prediction(
-                deform_mesh,
-                renderer=renderer_silhouette,
-                target_image=ref_image.permute(1, 2, 0), # (C, H, W) -> (H, W, C)
-                title=f"Epoch: {i}",
-                silhouette=True,
-            )
-            plt.show(block=False)
+            epoch_loss /= len(train_loader)
+            current_lr = optimizer.param_groups[0]['lr']
+            epoch_loop.set_description(f"Epoch {i}/{epochs} loss: {epoch_loss:.6f} lr: {current_lr:.4e}")
+
+            # Update the LR scheduler if needed
+            if scheduler is not None:
+                learning_rate.append(current_lr)
+                scheduler.step()
+
+            # Update the LossConfig
+            progress = (i + 1) / epochs
+            for config in losses.values():
+                config.step(progress)
+
+            if plot_every is not None and i % plot_every == 0:
+                utils.visualize_prediction(
+                    src_mesh.offset_verts(deform_verts),
+                    renderer=renderer_silhouette,
+                    target_image=ref_image.permute(1, 2, 0), # (C, H, W) -> (H, W, C)
+                    title=f"Epoch: {i}",
+                    silhouette=True,
+                )
+                plt.show(block=False)
+
+    with timer.section("train"), mem.section("train"):
+        epoch_loop = tqdm.tqdm(range(epochs), desc="Optimizing")
+        for i in epoch_loop:
+            _run_epoch(i, epoch_loop)
+
+    deform_mesh = src_mesh.offset_verts(deform_verts)
 
     # Visualize final step
     utils.visualize_prediction(
@@ -651,7 +617,15 @@ def optimize_mesh(
     )
     plt.show()
 
-    return deform_mesh, losses
+    # Build a report
+    report = recon_bench.ProfileResult(
+        timing=timer.get_report(),
+        memory=mem.get_report(),
+        cuda_available=mem.cuda_available,
+    )
+    print(report.summary())
+
+    return deform_mesh, losses, learning_rate
 
 
 # %% Setup Hypers
@@ -670,20 +644,22 @@ loss_configs: dict[str, LossConfig] = {
     "normal": LossConfig(
         weight=0.005,
         end_weight=0.01,
+        strategy="linear",
         loss_fn=p3dl.mesh_normal_consistency,
     ),
     "laplacian": LossConfig(
-        weight=0.3,
-        end_weight=1.0,
+        weight=0.1,
+        end_weight=0.6,
+        strategy="exponential",
         loss_fn=p3dl.mesh_laplacian_smoothing,
     ),
 }
 num_epochs = 1000
-views_per_iteration = 2
+views_per_iteration = 3
 plot_freq = 25
 
 # %% Run optimization
-new_mesh, losses = optimize_mesh(
+new_mesh, losses, learning_rate = optimize_mesh(
     pathlib.Path("../../data/ficus/transforms_train.json"),
     losses=loss_configs,
     epochs=num_epochs,
@@ -691,16 +667,23 @@ new_mesh, losses = optimize_mesh(
     optimizer_fn=lambda params: torch.optim.Adam(params, lr=1e-3),
     scheduler_fn=lambda opt: torch.optim.lr_scheduler.StepLR(
         opt,
-        step_size=90,
-        gamma=0.98
+        step_size=250,
+        gamma=0.99
     ),
     plot_every=plot_freq,
+    profiling=False,
 )
+
+# %%
+import utils
+import importlib
+
+importlib.reload(utils)
 
 # %% Plot losses
 utils.plot_losses(losses)
 plt.show()
-utils.plot_weight_history(losses)
+utils.plot_weight_history(losses, learning_rate)
 plt.show()
 
 
