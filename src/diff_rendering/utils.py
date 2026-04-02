@@ -100,15 +100,23 @@ def plot_losses(losses: dict[str, fit_mesh.LossConfig]) -> None:
     """
     figure = plt.figure(figsize=(13, 5))
     axis = figure.gca()
+
     for k, l in losses.items():
         axis.plot(l.values, label=k + " loss")
-    axis.legend(fontsize="16")
+
     axis.set_xlabel("Iteration", fontsize="16")
     axis.set_ylabel("Loss", fontsize="16")
     axis.set_title("Loss vs iterations", fontsize="16")
 
+    # Optional: the losses themselves have vastly different scales
+    axis.set_yscale("log")
 
-def plot_weight_history(losses: dict[str, fit_mesh.LossConfig]) -> None:
+    # Plot the standard legend
+    axis.legend(fontsize="16")
+
+
+
+def plot_weight_history(losses: dict[str, fit_mesh.LossConfig], learning_rate: list[float] | None = None) -> None:
     """
     Plot loss weight annealing curves over training epochs.
 
@@ -117,16 +125,31 @@ def plot_weight_history(losses: dict[str, fit_mesh.LossConfig]) -> None:
     losses : dict[str, fit_mesh.LossConfig]
         Mapping of loss name to its config. Each config's ``weight_history``
         attribute contains per-epoch weight floats.
+    learning_rate : list[float] | None, optional
+        Learning rate values. If provided, a second y-axis
+        will be plotted for the learning rate. Default is None.
     """
     figure = plt.figure(figsize=(13, 5))
     axis = figure.gca()
     for k, config in losses.items():
         if config.weight_history:
             axis.plot(config.weight_history, label=k)
-    axis.legend(fontsize="16")
+
     axis.set_xlabel("Epoch", fontsize="16")
     axis.set_ylabel("Weight", fontsize="16")
     axis.set_title("Loss weights vs epochs", fontsize="16")
+
+    if learning_rate is not None:
+        axis2 = axis.twinx()
+        axis2.plot(learning_rate, label="learning rate", linestyle="--")
+        axis2.set_ylabel("Learning rate", fontsize="16")
+
+        # Combine legends from both axes
+        lines_1, labels_1 = axis.get_legend_handles_labels()
+        lines_2, labels_2 = axis2.get_legend_handles_labels()
+        axis2.legend(lines_1 + lines_2, labels_1 + labels_2, loc="upper right", fontsize="16")
+    else:
+        axis.legend(fontsize="16")
 
 
 def visualize_prediction(
