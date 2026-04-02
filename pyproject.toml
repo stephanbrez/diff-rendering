@@ -10,6 +10,7 @@ dependencies = [
     "numpy>=2.2.6",
     "plotly>=6.5.2",
     "pytorch3d",
+    "recon-bench",
     "setuptools>=82.0.0",
     "torch",
     "torchvision",
@@ -39,6 +40,7 @@ explicit = true
 torch = { index = "pytorch-cu130" }
 torchvision = { index = "pytorch-cu130" }
 pytorch3d = { git = "https://github.com/facebookresearch/pytorch3d.git", rev = "main" }
+recon-bench = { path = "../recon-bench" }
 
 [tool.jupytext]
 formats = "ipynb,py:percent"
