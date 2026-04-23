@@ -1,3 +1,63 @@
+"""
+Dataset loaders for differentiable rendering with PyTorch3D.
+
+This module provides PyTorch Dataset implementations for loading image data
+and camera poses from various sources, such as Blender-formatted NeRF synthetic
+datasets and COLMAP outputs. It handles the critical conversion of camera
+extrinsics and coordinate systems to match PyTorch3D's expected formats.
+
+ =========================================================================
+ CONCEPT 1: Camera-to-World vs. World-to-Camera
+ =========================================================================
+ The `transform_matrix` from the dataset is a Camera-to-World (C2W) matrix.
+ It tells you where the camera is in the world.
+ PyTorch3D needs `R` and `T` which define the World-to-Camera (W2C) transform
+ (i.e., how to move world points into the camera's local frame).
+
+ TODO: Convert the C2W matrices into W2C matrices.
+
+ =========================================================================
+ CONCEPT 2: Coordinate System Conventions (The tricky part!)
+ =========================================================================
+ Standard OpenGL/NeRF Camera Space:
+   +X is Right
+   +Y is Up
+   +Z is Backward (the camera looks down the -Z axis)
+
+ PyTorch3D Camera Space (NDC space):
+   +X is Left
+   +Y is Up
+   +Z is Forward (the camera looks down the +Z axis)
+
+ TODO: Create an adjustment matrix to flip the X and Z axes of your W2C
+ matrices to match PyTorch3D's expected local camera coordinate system.
+
+ =========================================================================
+ CONCEPT 3: Row-Major vs Column-Major Transformation (R and T)
+ =========================================================================
+ Most computer vision math uses column vectors: P_cam = R @ P_world + T
+ PyTorch3D uses row vectors: P_cam = P_world @ R + T
+
+ Because of this, the 3x3 Rotation matrix `R` you pass to PyTorch3D must
+ be the TRANSPOSE of the standard rotation matrix.
+ `T` should be a shape (N, 3) tensor.
+
+ TODO: Extract the properly transposed `R` (N, 3, 3) and `T` (N, 3)
+ from your adjusted W2C matrices.
+
+=========================================================================
+CONCEPT 4: Intrinsics (Field of View / Focal Length)
+=========================================================================
+The dataset gives you `camera_angle_x`, which is the horizontal FOV in radians.
+PyTorch3D's standard PerspectiveCameras expects a `focal_length`.
+PyTorch3D uses Normalized Device Coordinates (NDC) by default, where the
+shortest side of the image goes from -1 to 1.
+Standard conversion from FOV to focal length is: f = 1.0 / tan(FOV / 2)
+TODO: Calculate the focal length using `camera_angle_x`.
+Note: If your images are square (like 800x800 in the Blender datasets),
+fx == fy, so a single focal length value is fine.
+
+"""
 import os
 import json
 import torch
