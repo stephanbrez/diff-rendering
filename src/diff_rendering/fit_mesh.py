@@ -1,4 +1,4 @@
-# ---
+# --
 # jupyter:
 #   jupytext:
 #     cell_metadata_filter: title,-all
@@ -15,95 +15,21 @@
 # ---
 
 # %%
+"""Utilities for fitting a mesh to silhouette observations.
+
+This module provides helpers to load, normalize, and render meshes, compute
+silhouette-based losses, and optimize mesh geometry with differentiable
+rendering.
+
+Notes
+-----
+The primary entry point is `optimize_mesh`, which orchestrates batched
+optimization with configurable loss scheduling via `LossConfig`.
 """
+# %% Jupyter autoreload
+# %load_ext autoreload
+# %autoreload 2
 
- =========================================================================
- CONCEPT 1: Camera-to-World vs. World-to-Camera
- =========================================================================
- The `transform_matrix` from the dataset is a Camera-to-World (C2W) matrix.
- It tells you where the camera is in the world.
- PyTorch3D needs `R` and `T` which define the World-to-Camera (W2C) transform
- (i.e., how to move world points into the camera's local frame).
-
- TODO: Convert the C2W matrices into W2C matrices.
-
- =========================================================================
- CONCEPT 2: Coordinate System Conventions (The tricky part!)
- =========================================================================
- Standard OpenGL/NeRF Camera Space:
-   +X is Right
-   +Y is Up
-   +Z is Backward (the camera looks down the -Z axis)
-
- PyTorch3D Camera Space (NDC space):
-   +X is Left
-   +Y is Up
-   +Z is Forward (the camera looks down the +Z axis)
-
- TODO: Create an adjustment matrix to flip the X and Z axes of your W2C
- matrices to match PyTorch3D's expected local camera coordinate system.
-
- =========================================================================
- CONCEPT 3: Row-Major vs Column-Major Transformation (R and T)
- =========================================================================
- Most computer vision math uses column vectors: P_cam = R @ P_world + T
- PyTorch3D uses row vectors: P_cam = P_world @ R + T
-
- Because of this, the 3x3 Rotation matrix `R` you pass to PyTorch3D must
- be the TRANSPOSE of the standard rotation matrix.
- `T` should be a shape (N, 3) tensor.
-
- TODO: Extract the properly transposed `R` (N, 3, 3) and `T` (N, 3)
- from your adjusted W2C matrices.
-
-=========================================================================
-CONCEPT 4: Intrinsics (Field of View / Focal Length)
-=========================================================================
-The dataset gives you `camera_angle_x`, which is the horizontal FOV in radians.
-PyTorch3D's standard PerspectiveCameras expects a `focal_length`.
-PyTorch3D uses Normalized Device Coordinates (NDC) by default, where the
-shortest side of the image goes from -1 to 1.
-Standard conversion from FOV to focal length is: f = 1.0 / tan(FOV / 2)
-TODO: Calculate the focal length using `camera_angle_x`.
-Note: If your images are square (like 800x800 in the Blender datasets),
-fx == fy, so a single focal length value is fine.
-=========================================================================
-Finally, initialize the PyTorch3D cameras
-=========================================================================
-R = ... (Shape: N, 3, 3)
-T = ... (Shape: N, 3)
-focal_length = ... (Shape: N, 1 or N, 2)
-cameras = PerspectiveCameras(
-    R=R,
-    T=T,
-    focal_length=focal_length,
-    image_size=[image_size] * N,  # Needed if you want to use screen coordinates later
-    device=transform_matrices.device
-)
-
-# return cameras
-
-"""
-"""
-get_world_to_view_transform
-This function returns a Transform3d representing the transformation
-matrix to go from world space to view space by applying a rotation and
-a translation.
-
-PyTorch3D uses the same convention as Hartley & Zisserman.
-I.e., for camera extrinsic parameters R (rotation) and T (translation),
-we map a 3D point `X_world` in world coordinates to
-a point `X_cam` in camera coordinates with:
-`X_cam = X_world R + T`
-
-Args:
-    R: (N, 3, 3) matrix representing the rotation.
-    T: (N, 3) matrix representing the translation.
-
-Returns:
-    a Transform3d object which represents the composed RT transformation.
-
-"""
 # %%
 import torch
 import pytorch3d.io as p3di
@@ -447,9 +373,10 @@ def optimize_mesh(
     batch_size: int = 4,
     optimizer_fn: OptimizerFactory = lambda params: torch.optim.SGD(params, lr=1.0, momentum=0.9),
     scheduler_fn: SchedulerFactory | None = None,
+    mesh_density: int = 4,
     plot_every: int | None = None,
     profiling: bool = False,
-) -> tuple[p3ds.Meshes, dict[str, LossConfig], list[float]]:
+) -> tuple[p3ds.Meshes, dict[str, LossConfig], list[float], recon_bench.ProfileResult]:
     """
     Optimize a sphere mesh to match training images via silhouette fitting.
 
@@ -474,6 +401,8 @@ def optimize_mesh(
     scheduler_fn : SchedulerFactory | None
         Factory that receives an optimizer and returns a learning rate
         scheduler. Called once per epoch. Default is None (no scheduling).
+    mesh_density: int
+        Integer specifying the number of iterations for subdivision of the mesh faces. Increasing by 1 will result in four new faces per face. Default is 4.
     plot_every : int | None
         Epoch interval for visualizing the mesh against the reference image.
         If None, no visualization is shown during training.
@@ -482,10 +411,10 @@ def optimize_mesh(
 
     Returns
     -------
-    tuple[p3ds.Meshes, dict[str, LossConfig], list[float]]
+    tuple[p3ds.Meshes, dict[str, LossConfig], list[float], recon_bench.ProfileResult]
         The optimized deformed mesh, the losses dict with populated
-        ``values`` and ``weight_history`` for each config, and the learning
-        rate history.
+        ``values`` and ``weight_history`` for each config, the learning
+        rate history, and recon_bench profile report (empty when profiling=False).
     """
     dataset = dataloader.NeRFSyntheticDataset(train_path)
     train_loader = torch.utils.data.DataLoader(
@@ -516,7 +445,7 @@ def optimize_mesh(
     )
 
     # Init source shape as a sphere
-    src_mesh = p3du.ico_sphere(4, device=DEVICE)
+    src_mesh = p3du.ico_sphere(mesh_density, device=DEVICE)
 
     # Setup deformation mesh
     deform_mesh = src_mesh
@@ -623,9 +552,7 @@ def optimize_mesh(
         memory=mem.get_report(),
         cuda_available=mem.cuda_available,
     )
-    print(report.summary())
-
-    return deform_mesh, losses, learning_rate
+    return deform_mesh, losses, learning_rate, report
 
 
 # %% Setup Hypers
@@ -636,9 +563,9 @@ loss_configs: dict[str, LossConfig] = {
         kwargs={"method": "iou"},
     ),
     "edge": LossConfig(
-        weight=0.1,
+        weight=0.3,
         end_weight=1.0,
-        strategy="cosine",
+        strategy="exponential",
         loss_fn=p3dl.mesh_edge_loss,
     ),
     "normal": LossConfig(
@@ -654,12 +581,12 @@ loss_configs: dict[str, LossConfig] = {
         loss_fn=p3dl.mesh_laplacian_smoothing,
     ),
 }
-num_epochs = 1000
-views_per_iteration = 3
+num_epochs = 500
+views_per_iteration = 2
 plot_freq = 25
 
 # %% Run optimization
-new_mesh, losses, learning_rate = optimize_mesh(
+new_mesh, losses, learning_rate, report = optimize_mesh(
     pathlib.Path("../../data/ficus/transforms_train.json"),
     losses=loss_configs,
     epochs=num_epochs,
@@ -667,18 +594,23 @@ new_mesh, losses, learning_rate = optimize_mesh(
     optimizer_fn=lambda params: torch.optim.Adam(params, lr=1e-3),
     scheduler_fn=lambda opt: torch.optim.lr_scheduler.StepLR(
         opt,
-        step_size=250,
+        step_size=150,
         gamma=0.99
     ),
+    mesh_density=5,
     plot_every=plot_freq,
-    profiling=False,
+    profiling=True,
 )
 
-# %%
-import utils
-import importlib
+# %% View profiling results
+print(report.summary())
 
-importlib.reload(utils)
+# %% Save profiling results
+import datetime
+filename = datetime.datetime.now().strftime("%Y%m%d_%H%M%S.log")
+with open(filename, "w") as f:
+    f.write(report.summary())
+
 
 # %% Plot losses
 utils.plot_losses(losses)
