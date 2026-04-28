@@ -620,8 +620,12 @@ plt.show()
 
 
 # %% Export mesh
-new_mesh = scale_norm_center_mesh(new_mesh.detach())
-final_verts, final_faces = new_mesh.get_mesh_verts_faces(0)
+# Save optimized mesh in training/world coordinates
+optimized_mesh = new_mesh.detach()
+final_verts, final_faces = optimized_mesh.get_mesh_verts_faces(0)
+p3di.save_obj(pathlib.Path('final_model_optimized.obj'), final_verts, final_faces)
 
-final_obj = pathlib.Path('final_model.obj')
-p3di.save_obj(final_obj, final_verts, final_faces)
+# %% Save normalized mesh separately for inspection only
+normalized_mesh = scale_norm_center_mesh(new_mesh.detach())
+norm_verts, norm_faces = normalized_mesh.get_mesh_verts_faces(0)
+p3di.save_obj(pathlib.Path('final_model_normalized.obj'), norm_verts, norm_faces)
