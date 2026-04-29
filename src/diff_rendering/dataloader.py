@@ -149,6 +149,7 @@ class NeRFSyntheticDataset(Dataset):
               with pixel values normalized to [0.0, 1.0].
         """
         frame = self.frames[idx]
+        # print(f"[NeRFSyntheticDataset] idx={idx} frame={frame}")
 
         # 1. Get the image path
         rel_path = frame['file_path']
