@@ -1,3 +1,20 @@
+# ---
+# jupyter:
+#   jupytext:
+#     cell_metadata_filter: title,-all
+#     formats: ipynb,py:percent
+#     text_representation:
+#       extension: .py
+#       format_name: percent
+#       format_version: '1.3'
+#       jupytext_version: 1.19.1
+#   kernelspec:
+#     display_name: .venv
+#     language: python
+#     name: python3
+# ---
+
+# %%
 # --
 # jupyter:
 #   jupytext:
@@ -206,6 +223,8 @@ def create_silhouette_renderer(
         image_size=image_size,
         blur_radius=np.log(1. / 1e-4 - 1.)*sigma,
         faces_per_pixel=50,
+        bin_size=64,
+        max_faces_per_bin=12288,
     )
 
     # Silhouette renderer
@@ -609,7 +628,7 @@ print(report.summary())
 import datetime
 filename = datetime.datetime.now().strftime("%Y%m%d_%H%M%S.log")
 with open(filename, "w") as f:
-    f.write(report.summary())
+    f.write(report.detail())
 
 
 # %% Plot losses
