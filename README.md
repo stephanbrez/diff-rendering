@@ -116,25 +116,40 @@ changes within the first 100 iterations with no oscillation.
 | Per-step time | ~0.21 sec                |
 | Peak VRAM     | 3365 MiB                 |
 
-![Camera 96](assets/sidebyside_96.png) ![Camera 26](assets/sidebyside_26.png)
-![Camera 89](assets/sidebyside_89.png) ![Camera 11](assets/sidebyside_96.png)
-[VISUAL: Final mesh renders alongside ground-truth reference images from same
-angles | rendered with
-[recon-bench](https://github.com/stephanbrez/recon-bench)]
+### Sample Set Metrics
 
-- **~60 minutes vs. days of manual work**. The output mesh preserves major
-  geometric features. It's immediately identifiable from any viewing angle.
-- **Usable topology**. Edge uniformity, face normals, and surface smoothness are
-  good enough for downstream use or as a base for manual refinement.
-- **Cross-dataset compatibility**. Worked on synthetic and real-world captures
-  without modification.
-- **Consumer-GPU accessible**. At 0.21 sec/step and 3365 MiB VRAM, longer runs
-  on less powerful hardware are feasible.
+[VISUAL: Final mesh renders alongside ground-truth reference images from same angles | rendered with [recon-bench](https://github.com/stephanbrez/recon-bench)]
+![Camera 96](assets/sidebyside_96.png)
+![Camera 26](assets/sidebyside_26.png)
+![Camera 89](assets/sidebyside_89.png)
+![Camera 11](assets/sidebyside_96.png)
+
+📊 Image Metrics
+
+| Metric        | Mean    |
+| ------------- | ------- |
+| psnr          | 17.1591 |
+| ssim_windowed | 0.8441  |
+| lpips         | 0.1714  |
+
+📊 Image Metrics (per item)
+
+| Item | psnr    | ssim_windowed | lpips  |
+| ---- | ------- | ------------- | ------ |
+| [0]  | 16.3373 | 0.8287        | 0.1892 |
+| [1]  | 16.9737 | 0.8509        | 0.1708 |
+| [2]  | 18.1515 | 0.8694        | 0.1353 |
+| [3]  | 17.1741 | 0.8275        | 0.1904 |
+
+- **~60 minutes vs. days of manual work**. The output mesh preserves major geometric features. It's immediately identifiable from any viewing angle.
+- **Usable topology**. Edge uniformity, face normals, and surface smoothness are good enough for downstream use or as a base for manual refinement.
+- **Cross-dataset compatibility**. Worked on synthetic and real-world captures without modification.
+- **Consumer-GPU accessible**. At 0.21 sec/step and 3365 MiB VRAM, longer runs on less powerful hardware are feasible.
 
 ![Mesh view](assets/viewport_1_small.png)
 ![Mesh view](assets/viewport_2_small.png)
-![Mesh view](assets/viewport_3_small.png) [VISUAL: Close-up comparison — areas
-where the mesh captures fine detail well vs. areas where it approximates]
+![Mesh view](assets/viewport_3_small.png)
+[VISUAL: Close-up comparison — areas where the mesh captures fine detail well vs. areas where it approximates]e
 
 ---
 
@@ -159,8 +174,6 @@ globally dense mesh.
 
 I'm exploring multi-objective optimization of the regularization weights via
 Pareto front configurations across the quality trade-offs.
-
----
 
 ## 3D Vision vs. Deep Learning
 
