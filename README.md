@@ -146,10 +146,10 @@ changes within the first 100 iterations with no oscillation.
 - **Cross-dataset compatibility**. Worked on synthetic and real-world captures without modification.
 - **Consumer-GPU accessible**. At 0.21 sec/step and 3365 MiB VRAM, longer runs on less powerful hardware are feasible.
 
+[VISUAL: Close-up comparison — areas where the mesh captures fine detail well vs. areas where it approximates]e
 ![Mesh view](assets/viewport_1_small.png)
 ![Mesh view](assets/viewport_2_small.png)
 ![Mesh view](assets/viewport_3_small.png)
-[VISUAL: Close-up comparison — areas where the mesh captures fine detail well vs. areas where it approximates]e
 
 ---
 
