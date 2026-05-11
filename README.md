@@ -4,7 +4,7 @@ A pipeline that deforms a sphere primitive into a target 3D mesh using only 2D
 reference images. It replaces a multi-day manual modeling task with ~60 minutes
 of GPU compute on a GB10.
 
-Stack: PyTorch, PyTorch3D, Python · [GitHub link] · See the [full writeup] for a
+Stack: PyTorch, PyTorch3D, Python · See the [full writeup](https://stephanbrezinsky.com/projects/diff-rendering/) for a
 deep dive.
 
 ![Side-by-Side Progression](assets/training_progression_2.png) [VISUAL:
